@@ -49,8 +49,8 @@ class DDPG:
         """
         A function to update the target networks
         """
-        update_target_model(self.actor_target, self.actor)
-        update_target_model(self.critic_target, self.critic)
+        update_target_model(self.actor_target, self.actor, tau=0.001)
+        update_target_model(self.critic_target, self.critic, tau=0.001)
 
     def update_critic(self, state_batch, action_batch, next_state_batch, reward_batch):
         self.optimizer_critic.zero_grad()

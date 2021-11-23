@@ -13,7 +13,7 @@ def calculate_return(rollout, gamma):
     return r
 
 
-def update_target_model(target_model, source_model, tau=0.001):
+def update_target_model(target_model, source_model, tau):
     with torch.no_grad():
         update_params = deepcopy(target_model.state_dict())
         for name, value in source_model.named_parameters():

@@ -1,7 +1,8 @@
 """ Learn a policy using DDPG for the reach task"""
-import time
 import gym
 import matplotlib.pyplot as plt
+import torch
+
 from common import *
 
 
@@ -16,7 +17,8 @@ class TD3:
             gamma,
             batch_size_sample,
             d,
-            batch_size_generate
+            batch_size_generate,
+            tau
     ):
         """
         param: env: An gym environment
@@ -34,6 +36,7 @@ class TD3:
         self.action_dim = action_dim
         self.state_dim = state_dim
         self.d = d  # number of critic steps before stepping actor/targets
+        self.tau = tau  # how far to step target net toward trained nets
 
         self.a_tilde_cov = torch.eye(action_dim) * 0.01
 
@@ -43,11 +46,11 @@ class TD3:
 
         self.critic_1 = Critic(state_dim, action_dim)
         self.critic_1_target = Critic(state_dim, action_dim)
-        self.critic_1_target.load_state_dict(self.critic.state_dict())
+        self.critic_1_target.load_state_dict(self.critic_1.state_dict())
 
         self.critic_2 = Critic(state_dim, action_dim)
         self.critic_2_target = Critic(state_dim, action_dim)
-        self.critic_2_target.load_state_dict(self.critic.state_dict())
+        self.critic_2_target.load_state_dict(self.critic_2.state_dict())
 
         self.optimizer_actor = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.optimizer_critic_1 = torch.optim.Adam(self.critic_1.parameters(), lr=critic_lr)
@@ -60,13 +63,16 @@ class TD3:
         """
         A function to update the target networks
         """
-        update_target_model(self.actor_target, self.actor)
-        update_target_model(self.critic_1_target, self.critic_1)
-        update_target_model(self.critic_2_target, self.critic_2)
+        update_target_model(self.actor_target, self.actor, self.tau)
+        update_target_model(self.critic_1_target, self.critic_1, self.tau)
+        update_target_model(self.critic_2_target, self.critic_2, self.tau)
 
     def update_actor(self, s):
         on_policy_a = self.actor(s)
         on_policy_Q = self.critic_1(s, on_policy_a)
+
+        assert on_policy_a.shape == (s.shape[0], self.action_dim)
+        assert on_policy_Q.shape == (s.shape[0], 1)
 
         self.optimizer_actor.zero_grad()
         actor_loss = torch.mean(on_policy_Q)
@@ -80,15 +86,26 @@ class TD3:
         noise_dist = torch.distributions.MultivariateNormal(torch.zeros(a.shape), self.a_tilde_cov)
         epsilon = noise_dist.sample()
 
+        assert epsilon.shape == a.shape
+
         a_tilde = self.actor_target(s_prime) + epsilon
+
+        assert a_tilde.shape == a.shape
+
         Q1_tilde = self.critic_1_target(s_prime, a_tilde)
         Q2_tilde = self.critic_2_target(s_prime, a_tilde)
-        y = r + self.gamma * torch.min(Q1_tilde, Q2_tilde)
+
+        assert Q1_tilde.shape == r.shape
+
+        with torch.no_grad():
+            y = r + self.gamma * torch.min(Q1_tilde, Q2_tilde)
 
         Q1 = self.critic_1(s, a)
         Q2 = self.critic_2(s, a)
 
-        criterion = torch.MeanSquaredError()
+        assert Q1.shape == y.shape
+
+        criterion = torch.nn.MSELoss()
 
         self.optimizer_critic_1.zero_grad()
         critic_loss_1 = criterion(y, Q1)
@@ -111,9 +128,14 @@ class TD3:
         actor_losses = []
         returns = []
         for t in range(num_steps):
-            fill_transition_buffer(self.env, self.ReplayBuffer, self.actor, self.batch_size_generate, add_noise=True)
+            fill_transition_buffer(self.env, self.ReplayBuffer, self.batch_size_generate, self.actor, add_noise=True)
 
             s, a, r, s_prime = self.ReplayBuffer.buffer_sample(self.batch_size_sample)
+
+            assert s.shape[1] == self.state_dim
+            assert a.shape[1] == self.action_dim
+            assert r.shape[1] == 1
+            assert s_prime.shape[1] == self.state_dim
 
             critic_loss = self.update_critics(s, a, r, s_prime)
 
@@ -158,10 +180,11 @@ if __name__ == "__main__":
         gamma=0.99,
         batch_size_sample=100,
         batch_size_generate=10,
-        d=10
+        d=10,
+        tau=0.01
     )
 
     # Train the policy
-    td3_object.train(1e4)
+    td3_object.train(int(1e3))
 
     visualize_rollout(env, td3_object.actor)

@@ -128,7 +128,7 @@ class DDPG:
 
             self.update_target_networks()
 
-            rollout = collect_episode(self.env, self.actor, self.action_dim, add_noise=False)
+            rollout = collect_episode(self.env, self.actor, add_noise=False)
             returns.append(calculate_return(rollout, self.gamma))
 
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1)

@@ -83,12 +83,12 @@ class ReplayBuffer:
         param: env : gym environment object
         """
 
+        total_dim = 2*state_dim+action_dim+1
+
         self.state_slice = slice(0, state_dim)
         self.action_slice = slice(state_dim, state_dim+action_dim)
         self.reward_ind = state_dim + action_dim
-        self.next_state_slice = slice(state_dim+action_dim+1,)
-
-        total_dim = 2*state_dim+action_dim+1
+        self.next_state_slice = slice(state_dim+action_dim+1, total_dim)
 
         self.max_len = buffer_size
         self.memory = torch.zeros((buffer_size, total_dim))

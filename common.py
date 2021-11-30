@@ -1,4 +1,5 @@
 import time
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,50 +23,64 @@ def update_target_model(target_model, source_model, tau):
 
 
 def visualize_rollout(env, actor):
+    action_low = env.action_space.low
+    action_high = env.action_space.high
+    action_range = action_high - action_low
     # Evaluate the final policy
     state = env.reset()
     done = False
+    epi_return = 0
     while not done:
         s_tens = torch.tensor(state, dtype=torch.float)
         action = actor(s_tens).detach().squeeze().numpy()
-        next_state, _, done, _ = env.step(action)
+        action = action * action_range + action_low
+        next_state, r, done, _ = env.step(action)
+        epi_return += r
         env.render()
-        time.sleep(0.05)
+        # time.sleep(0.05)
         state = next_state
+    print("Total reward of visualized episode: {}".format(epi_return))
 
 
-def collect_episode(env, actor=None, add_noise=False, random=False):
-    action_dim = env.action_space._shape[0]
-    m = torch.distributions.MultivariateNormal(torch.zeros((action_dim,)), torch.eye(action_dim)*0.1)
-    transitions = []
-    s = env.reset()
-    done = False
-    while not done:
-        if random:
-            a = env.action_space.sample()
-        else:
-            s_tens = torch.tensor(s, dtype=torch.float)
-            a_tens = actor(s_tens)
-            if add_noise:
-                a_tens += m.sample()
-            torch.clamp(a_tens, min=-1, max=1)
-            a = a_tens.detach().numpy()
-        s_prime, r, done, _ = env.step(a)
-        transitions.append({
-            'state': s,
-            'action': a,
-            'reward': r,
-            'next_state': s_prime
-        })
-        s = s_prime
-    return transitions
+def collect_episode(env, actor=None, noise_cov=None, random=False):
+    with torch.no_grad():
+        action_low = env.action_space.low
+        action_high = env.action_space.high
+        action_range = action_high - action_low
+        action_dim = env.action_space.shape[0]
+        if noise_cov is not None:
+            m = torch.distributions.MultivariateNormal(torch.zeros((action_dim,)), noise_cov)
+        transitions = []
+        s = env.reset()
+        done = False
+        while not done:
+            if random:
+                a_actual = env.action_space.sample()
+                a = (a_actual - action_low) / action_range
+            else:
+                s_tens = torch.tensor(s, dtype=torch.float)
+                a_tens = actor(s_tens)
+                if noise_cov is not None:
+                    a_tens += m.sample()
+                torch.clamp(a_tens, min=0, max=1)
+                a = a_tens.detach().numpy()
+                a_actual = a * action_range + action_low
+            s_prime, r, done, _ = env.step(a_actual)
+            transitions.append({
+                'state': s,
+                'action': a,
+                'reward': r,
+                'next_state': s_prime
+            })
+            s = s_prime
+        return transitions
 
 
-def fill_transition_buffer(env, buffer, num_steps, actor=None, add_noise=False, random=False):
+def fill_transition_buffer(env, buffer, num_steps, actor=None, noise_cov=None, random=False):
     steps = 0
 
     while steps < num_steps:
-        transitions = collect_episode(env, actor, add_noise, random)
+        transitions = collect_episode(env, actor, noise_cov, random)
         steps += len(transitions)
         buffer.buffer_add(transitions)
 
@@ -154,7 +169,7 @@ class Actor(nn.Module):
         x = self.fc2(x)
         x = F.relu(x)
         x = self.fc3(x)
-        x = F.tanh(x)
+        x = F.sigmoid(x)
 
         return x
 

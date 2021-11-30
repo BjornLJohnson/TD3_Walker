@@ -9,8 +9,6 @@ class DDPG:
     def __init__(
             self,
             env,
-            state_dim,
-            action_dim,
             critic_lr,
             actor_lr,
             gamma,
@@ -28,15 +26,15 @@ class DDPG:
         self.gamma = gamma
         self.batch_size = batch_size
         self.env = env
-        self.action_dim = action_dim
-        self.state_dim = state_dim
+        self.action_dim = env.action_space.shape[0]
+        self.state_dim = env.observation_space.shape[0]
 
-        self.actor = Actor(state_dim, action_dim)
-        self.actor_target = Actor(state_dim, action_dim)
+        self.actor = Actor(self.state_dim, self.action_dim)
+        self.actor_target = Actor(self.state_dim, self.action_dim)
         self.actor_target.load_state_dict(self.actor.state_dict())
 
-        self.critic = Critic(state_dim, action_dim)
-        self.critic_target = Critic(state_dim, action_dim)
+        self.critic = Critic(self.state_dim, self.action_dim)
+        self.critic_target = Critic(self.state_dim, self.action_dim)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
         self.optimizer_actor = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
@@ -148,8 +146,6 @@ if __name__ == "__main__":
 
     ddpg_object = DDPG(
         env,
-        state_dim=8,
-        action_dim=2,
         critic_lr=1e-4,
         actor_lr=1e-4,
         gamma=0.99,

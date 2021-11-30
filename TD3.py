@@ -10,15 +10,15 @@ class TD3:
     def __init__(
             self,
             env,
-            state_dim,
-            action_dim,
             critic_lr,
             actor_lr,
             gamma,
             batch_size_sample,
             d,
             batch_size_generate,
-            tau
+            tau,
+            action_noise_cov,
+            a_tilde_cov
     ):
         """
         param: env: An gym environment
@@ -33,30 +33,31 @@ class TD3:
         self.gamma = gamma # discount factor
         self.batch_size_sample = batch_size_sample # number of transitions to sample at once
         self.batch_size_generate = batch_size_generate  # number of transitions to generate at once
-        self.action_dim = action_dim
-        self.state_dim = state_dim
+        self.action_dim = env.action_space.shape[0]
+        self.state_dim = env.observation_space.shape[0]
         self.d = d  # number of critic steps before stepping actor/targets
         self.tau = tau  # how far to step target net toward trained nets
 
-        self.a_tilde_cov = torch.eye(action_dim) * 0.01
+        self.action_noise_cov = torch.eye(self.action_dim) * action_noise_cov
+        self.a_tilde_cov = torch.eye(self.action_dim) * a_tilde_cov
 
-        self.actor = Actor(state_dim, action_dim)
-        self.actor_target = Actor(state_dim, action_dim)
+        self.actor = Actor(self.state_dim, self.action_dim)
+        self.actor_target = Actor(self.state_dim, self.action_dim)
         self.actor_target.load_state_dict(self.actor.state_dict())
 
-        self.critic_1 = Critic(state_dim, action_dim)
-        self.critic_1_target = Critic(state_dim, action_dim)
+        self.critic_1 = Critic(self.state_dim, self.action_dim)
+        self.critic_1_target = Critic(self.state_dim, self.action_dim)
         self.critic_1_target.load_state_dict(self.critic_1.state_dict())
 
-        self.critic_2 = Critic(state_dim, action_dim)
-        self.critic_2_target = Critic(state_dim, action_dim)
+        self.critic_2 = Critic(self.state_dim, self.action_dim)
+        self.critic_2_target = Critic(self.state_dim, self.action_dim)
         self.critic_2_target.load_state_dict(self.critic_2.state_dict())
 
         self.optimizer_actor = torch.optim.Adam(self.actor.parameters(), lr=actor_lr)
         self.optimizer_critic_1 = torch.optim.Adam(self.critic_1.parameters(), lr=critic_lr)
         self.optimizer_critic_2 = torch.optim.Adam(self.critic_2.parameters(), lr=critic_lr)
 
-        self.ReplayBuffer = ReplayBuffer(10000, state_dim, action_dim)
+        self.ReplayBuffer = ReplayBuffer(10000, self.state_dim, self.action_dim)
         fill_transition_buffer(self.env, self.ReplayBuffer, 1000, random=True)
 
     def update_target_networks(self):
@@ -85,19 +86,27 @@ class TD3:
 
         noise_dist = torch.distributions.MultivariateNormal(torch.zeros(a.shape), self.a_tilde_cov)
         epsilon = noise_dist.sample()
+        # TODO: find a suitable cov value and clip noise to be in a defined range
+        # epsilon = torch.clip(epsilon, -c, c)
 
         assert epsilon.shape == a.shape
 
-        a_tilde = self.actor_target(s_prime) + epsilon
-
-        assert a_tilde.shape == a.shape
-
-        Q1_tilde = self.critic_1_target(s_prime, a_tilde)
-        Q2_tilde = self.critic_2_target(s_prime, a_tilde)
-
-        assert Q1_tilde.shape == r.shape
-
         with torch.no_grad():
+            a_target = self.actor_target(s_prime)
+
+            assert a_target.shape == a.shape
+
+            a_tilde = a_target + epsilon
+            a_tilde = torch.clip(a_tilde, -1, 1)
+
+            assert a_tilde.shape == a.shape
+
+            Q1_tilde = self.critic_1_target(s_prime, a_tilde)
+            Q2_tilde = self.critic_2_target(s_prime, a_tilde)
+
+            assert Q1_tilde.shape == r.shape
+
+            # TODO: use y = r where s_prime is terminal as a result of a failure state?
             y = r + self.gamma * torch.min(Q1_tilde, Q2_tilde)
 
         Q1 = self.critic_1(s, a)
@@ -128,7 +137,8 @@ class TD3:
         actor_losses = []
         returns = []
         for t in range(num_steps):
-            fill_transition_buffer(self.env, self.ReplayBuffer, self.batch_size_generate, self.actor, add_noise=True)
+            # TODO: give control over action noise to TD3 class
+            fill_transition_buffer(self.env, self.ReplayBuffer, self.batch_size_generate, self.actor, noise_cov=self.action_noise_cov)
 
             s, a, r, s_prime = self.ReplayBuffer.buffer_sample(self.batch_size_sample)
 
@@ -143,7 +153,7 @@ class TD3:
                 actor_loss = self.update_actor(s)
                 self.update_target_networks()
 
-                rollout = collect_episode(self.env, self.actor, add_noise=False)
+                rollout = collect_episode(self.env, self.actor, noise_cov=self.action_noise_cov)
                 epi_return = calculate_return(rollout, self.gamma)
 
                 critic_losses.append(critic_loss)
@@ -168,23 +178,30 @@ class TD3:
 
 if __name__ == "__main__":
     # Define the environment
-    env = gym.make("modified_gym_env:ReacherPyBulletEnv-v1", rand_init=True)
-    env.render()
+    # env = gym.make("modified_gym_env:ReacherPyBulletEnv-v1", rand_init=True)
+    # env = gym.make("Walker2d-v2")
+    # env = gym.make("InvertedPendulum-v2")
+    env = gym.make("Pendulum-v1")
+    # env = gym.make("CartPole-v1")
 
+    # TODO: Sync hyper parameters and network architectures with paper
     td3_object = TD3(
         env,
-        state_dim=8,
-        action_dim=2,
-        critic_lr=1e-4,
-        actor_lr=1e-4,
+        critic_lr=1e-2,
+        actor_lr=1e-3,
         gamma=0.99,
         batch_size_sample=100,
         batch_size_generate=10,
-        d=10,
-        tau=0.01
+        d=10,  # larger values could be useful
+        tau=5e-3,
+        action_noise_cov=0.01,
+        a_tilde_cov=1e-4
     )
+
+    # visualize_rollout(env, td3_object.actor)
 
     # Train the policy
     td3_object.train(int(1e3))
 
     visualize_rollout(env, td3_object.actor)
+

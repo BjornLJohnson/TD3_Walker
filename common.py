@@ -7,33 +7,27 @@ from copy import deepcopy
 
 
 def calculate_return(rollout, gamma):
-    r = 0
-    for transition in rollout:
-        r = gamma*r + transition['reward']
+    result = 0
+    for i in range(len(rollout)):
+        transition = rollout[i]
+        result = result + gamma**i * transition['reward']
 
-    return r
+    return result
 
 
-def update_target_model(target_model, source_model, tau):
-    with torch.no_grad():
-        update_params = deepcopy(target_model.state_dict())
-        for name, value in source_model.named_parameters():
-            update_params[name] = tau*value + (1-tau)*update_params[name]
-        target_model.load_state_dict(update_params)
+def update_target_model(target, source, tau):
+    for target_param, param in zip(target.parameters(), source.parameters()):
+        target_param.data.copy_(target_param.data * (1.0 - tau) + param.data * tau)
 
 
 def visualize_rollout(env, actor):
-    action_low = env.action_space.low
-    action_high = env.action_space.high
-    action_range = action_high - action_low
     # Evaluate the final policy
     state = env.reset()
     done = False
     epi_return = 0
     while not done:
         s_tens = torch.tensor(state, dtype=torch.float)
-        action = actor(s_tens).detach().squeeze().numpy()
-        action = action * action_range + action_low
+        action = actor(s_tens).detach().numpy()
         next_state, r, done, _ = env.step(action)
         epi_return += r
         env.render()
@@ -44,10 +38,9 @@ def visualize_rollout(env, actor):
 
 def collect_episode(env, actor=None, noise_cov=None, random=False):
     with torch.no_grad():
-        action_low = env.action_space.low
-        action_high = env.action_space.high
-        action_range = action_high - action_low
         action_dim = env.action_space.shape[0]
+        action_min = torch.tensor(env.action_space.low)
+        action_max = torch.tensor(env.action_space.high)
         if noise_cov is not None:
             m = torch.distributions.MultivariateNormal(torch.zeros((action_dim,)), noise_cov)
         transitions = []
@@ -55,17 +48,15 @@ def collect_episode(env, actor=None, noise_cov=None, random=False):
         done = False
         while not done:
             if random:
-                a_actual = env.action_space.sample()
-                a = (a_actual - action_low) / action_range
+                a = env.action_space.sample()
             else:
                 s_tens = torch.tensor(s, dtype=torch.float)
                 a_tens = actor(s_tens)
                 if noise_cov is not None:
                     a_tens += m.sample()
-                torch.clamp(a_tens, min=0, max=1)
+                torch.clamp(a_tens, min=action_min, max=action_max)
                 a = a_tens.detach().numpy()
-                a_actual = a * action_range + action_low
-            s_prime, r, done, _ = env.step(a_actual)
+            s_prime, r, done, _ = env.step(a)
             transitions.append({
                 'state': s,
                 'action': a,
@@ -147,7 +138,7 @@ class ReplayBuffer:
 
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim):
+    def __init__(self, state_dim, action_dim, action_low, action_high):
         """
         Initialize the network
         param: state_dim : Size of the state space
@@ -159,6 +150,11 @@ class Actor(nn.Module):
         self.fc2 = torch.nn.Linear(128, 64)
         self.fc3 = torch.nn.Linear(64, action_dim)
 
+        self.action_scale = torch.FloatTensor(
+            (action_high - action_low) / 2.)
+        self.action_bias = torch.FloatTensor(
+            (action_high + action_low) / 2.)
+
     def forward(self, x):
         """
         Define the forward pass
@@ -169,7 +165,7 @@ class Actor(nn.Module):
         x = self.fc2(x)
         x = F.relu(x)
         x = self.fc3(x)
-        x = F.sigmoid(x)
+        x = torch.tanh(x) * self.action_scale + self.action_bias
 
         return x
 

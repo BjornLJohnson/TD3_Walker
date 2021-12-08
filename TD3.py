@@ -41,8 +41,8 @@ class TD3:
         self.action_noise_cov = torch.eye(self.action_dim) * action_noise_cov
         self.a_tilde_cov = torch.eye(self.action_dim) * a_tilde_cov
 
-        self.actor = Actor(self.state_dim, self.action_dim)
-        self.actor_target = Actor(self.state_dim, self.action_dim)
+        self.actor = Actor(self.state_dim, self.action_dim, self.env.action_space.low, self.env.action_space.high)
+        self.actor_target = Actor(self.state_dim, self.action_dim, self.env.action_space.low, self.env.action_space.high)
         self.actor_target.load_state_dict(self.actor.state_dict())
 
         self.critic_1 = Critic(self.state_dim, self.action_dim)
@@ -70,13 +70,18 @@ class TD3:
 
     def update_actor(self, s):
         on_policy_a = self.actor(s)
-        on_policy_Q = self.critic_1(s, on_policy_a)
+        on_policy_Q1 = self.critic_1(s, on_policy_a)
+        on_policy_Q2 = self.critic_2(s, on_policy_a)
+
+        # TODO: Make sure using min for policy updates is consistent w/ TD3
+        min_Q = torch.min(on_policy_Q1, on_policy_Q2)
 
         assert on_policy_a.shape == (s.shape[0], self.action_dim)
-        assert on_policy_Q.shape == (s.shape[0], 1)
+        assert min_Q.shape == (s.shape[0], 1)
+
+        actor_loss = -torch.mean(min_Q)
 
         self.optimizer_actor.zero_grad()
-        actor_loss = torch.mean(on_policy_Q)
         actor_loss.backward()
         self.optimizer_actor.step()
 
@@ -115,14 +120,14 @@ class TD3:
         assert Q1.shape == y.shape
 
         criterion = torch.nn.MSELoss()
+        critic_loss_1 = criterion(y, Q1)
+        critic_loss_2 = criterion(y, Q2)
 
         self.optimizer_critic_1.zero_grad()
-        critic_loss_1 = criterion(y, Q1)
         critic_loss_1.backward()
         self.optimizer_critic_1.step()
 
         self.optimizer_critic_2.zero_grad()
-        critic_loss_2 = criterion(y, Q2)
         critic_loss_2.backward()
         self.optimizer_critic_2.step()
 
@@ -137,7 +142,7 @@ class TD3:
         actor_losses = []
         returns = []
         for t in range(num_steps):
-            # TODO: give control over action noise to TD3 class
+            # TODO: Replace this with a single transition instead of an entire episode
             fill_transition_buffer(self.env, self.ReplayBuffer, self.batch_size_generate, self.actor, noise_cov=self.action_noise_cov)
 
             s, a, r, s_prime = self.ReplayBuffer.buffer_sample(self.batch_size_sample)
@@ -187,21 +192,21 @@ if __name__ == "__main__":
     # TODO: Sync hyper parameters and network architectures with paper
     td3_object = TD3(
         env,
-        critic_lr=1e-2,
+        critic_lr=1e-3,
         actor_lr=1e-3,
         gamma=0.99,
         batch_size_sample=100,
         batch_size_generate=10,
-        d=10,  # larger values could be useful
-        tau=5e-3,
-        action_noise_cov=0.01,
-        a_tilde_cov=1e-4
+        d=2,  # number of critic updates per actor update
+        tau=5e-3,  # how far to step targets towards trained policies
+        action_noise_cov=0.01,  # noise to add to policy output in rollouts
+        a_tilde_cov=1e-4  # noise to add to actions for q function estimates
     )
 
     # visualize_rollout(env, td3_object.actor)
 
     # Train the policy
-    td3_object.train(int(1e3))
+    td3_object.train(int(1e4))
 
     visualize_rollout(env, td3_object.actor)
 

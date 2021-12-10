@@ -73,7 +73,7 @@ def fill_transition_buffer(env, buffer, num_steps, actor=None, noise_cov=None, r
     while steps < num_steps:
         transitions = collect_episode(env, actor, noise_cov, random)
         steps += len(transitions)
-        buffer.buffer_add(transitions)
+        buffer.add(transitions)
 
     return steps
 
@@ -89,19 +89,20 @@ class ReplayBuffer:
         param: env : gym environment object
         """
 
-        total_dim = 2*state_dim+action_dim+1
+        total_dim = 2*state_dim+action_dim+2
 
         self.state_slice = slice(0, state_dim)
         self.action_slice = slice(state_dim, state_dim+action_dim)
         self.reward_ind = state_dim + action_dim
-        self.next_state_slice = slice(state_dim+action_dim+1, total_dim)
+        self.next_state_slice = slice(state_dim+action_dim+1, total_dim-1)
+        self.done_ind = -1
 
         self.max_len = buffer_size
         self.memory = torch.zeros((buffer_size, total_dim))
         self.curr_ind = 0
         self.stored_transitions = 0
 
-    def buffer_add(self, transitions):
+    def add(self, transitions):
         """
         A function to add a dictionary to the buffer
         param: exp : A dictionary consisting of state, action, reward , next state and done flag
@@ -109,23 +110,29 @@ class ReplayBuffer:
         for t in transitions:
             s = torch.tensor(t['state'], dtype=torch.float)
             a = torch.tensor(t['action'], dtype=torch.float)
-            r = torch.tensor(t['reward'], dtype=torch.float).unsqueeze(dim=0)
+            r = torch.tensor(t['reward'], dtype=torch.float)
             n = torch.tensor(t['next_state'], dtype=torch.float)
+            nd = torch.tensor(t['not done'], dtype=torch.float)
 
-            self.add_one_transition(s, a, r, n)
+            self.add_one(s, a, r, n, nd)
 
-    def add_one_transition(self, s, a, r, n):
-        self.memory[self.curr_ind] = torch.cat([s, a, r, n])
+    def add_one(self, s, a, r, n, nd):
+        self.memory[self.curr_ind, self.state_slice] = torch.tensor(s)
+        self.memory[self.curr_ind, self.action_slice] = torch.tensor(a)
+        self.memory[self.curr_ind, self.reward_ind] = r
+        self.memory[self.curr_ind, self.next_state_slice] = torch.tensor(n)
+        self.memory[self.curr_ind, self.done_ind] = nd
+
         self.curr_ind = (self.curr_ind + 1) % self.max_len
         if self.stored_transitions < self.max_len:
             self.stored_transitions += 1
 
-    def buffer_sample(self, N):
+    def sample(self, N):
         """
         A function to sample N points from the buffer
         param: N : Number of samples to obtain from the buffer
         """
-        indices = torch.randperm(self.stored_transitions)[:N]
+        indices = np.random.choice(self.stored_transitions, N)
 
         samples = self.memory[indices]
 
@@ -133,8 +140,9 @@ class ReplayBuffer:
         actions = samples[:, self.action_slice]
         rewards = samples[:, self.reward_ind].unsqueeze(dim=1)
         next_states = samples[:, self.next_state_slice]
+        not_done = samples[:, self.done_ind].unsqueeze(dim=1)
 
-        return states, actions, rewards, next_states
+        return states, actions, rewards, next_states, not_done
 
 
 class Actor(nn.Module):
@@ -146,9 +154,9 @@ class Actor(nn.Module):
         """
         super(Actor, self).__init__()
 
-        self.fc1 = torch.nn.Linear(state_dim, 128)
-        self.fc2 = torch.nn.Linear(128, 64)
-        self.fc3 = torch.nn.Linear(64, action_dim)
+        self.fc1 = torch.nn.Linear(state_dim, 256)
+        self.fc2 = torch.nn.Linear(256, 256)
+        self.fc3 = torch.nn.Linear(256, action_dim)
 
         self.action_scale = torch.FloatTensor(
             (action_high - action_low) / 2.)
@@ -179,9 +187,9 @@ class Critic(nn.Module):
         """
         super(Critic, self).__init__()
 
-        self.fc1 = torch.nn.Linear(state_dim + action_dim, 128)
-        self.fc2 = torch.nn.Linear(128, 64)
-        self.fc3 = torch.nn.Linear(64, 1)
+        self.fc1 = torch.nn.Linear(state_dim + action_dim, 256)
+        self.fc2 = torch.nn.Linear(256, 256)
+        self.fc3 = torch.nn.Linear(256, 1)
 
     def forward(self, state, action):
         """

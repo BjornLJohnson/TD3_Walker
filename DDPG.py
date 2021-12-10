@@ -92,7 +92,7 @@ class DDPG:
         """
         A function to update the function just once
         """
-        state_batch, action_batch, reward_batch, next_state_batch = self.ReplayBuffer.buffer_sample(self.batch_size)
+        state_batch, action_batch, reward_batch, next_state_batch = self.ReplayBuffer.sample(self.batch_size)
 
         critic_loss = self.update_critic(state_batch, action_batch, next_state_batch, reward_batch)
 
